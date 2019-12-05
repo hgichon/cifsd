@@ -5083,7 +5083,7 @@ static int set_file_basic_info(struct cifsd_file *fp,
 	if (attrs.ia_valid) {
 		struct dentry *dentry = filp->f_path.dentry;
 		struct inode *inode = d_inode(dentry);
-		
+
 		if (IS_IMMUTABLE(inode) || IS_APPEND(inode))
 			return -EACCES;
 
