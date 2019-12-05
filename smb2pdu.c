@@ -3158,22 +3158,14 @@ static void lock_dir(struct cifsd_file *dir_fp)
 {
 	struct dentry *dir = dir_fp->filp->f_path.dentry;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0)
 	inode_lock_nested(d_inode(dir), I_MUTEX_PARENT);
-#else
-	mutex_lock_nested(&d_inode(dir)->i_mutex, I_MUTEX_PARENT);
-#endif
 }
 
 static void unlock_dir(struct cifsd_file *dir_fp)
 {
 	struct dentry *dir = dir_fp->filp->f_path.dentry;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0)
 	inode_unlock(d_inode(dir));
-#else
-	mutex_unlock(&d_inode(dir)->i_mutex);
-#endif
 }
 
 static int process_query_dir_entries(struct smb2_query_dir_private *priv)
@@ -5089,20 +5081,13 @@ static int set_file_basic_info(struct cifsd_file *fp,
 	attrs.ia_valid |= ATTR_CTIME;
 
 	if (attrs.ia_valid) {
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 37)
 		struct dentry *dentry = filp->f_path.dentry;
 		struct inode *inode = d_inode(dentry);
-#else
-		struct inode *inode = FP_INODE(fp);
-#endif
+		
 		if (IS_IMMUTABLE(inode) || IS_APPEND(inode))
 			return -EACCES;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 1, 37)
 		rc = setattr_prepare(dentry, &attrs);
-#else
-		rc = inode_change_ok(inode, &attrs);
-#endif
 		if (rc)
 			return -EINVAL;
 
@@ -6558,7 +6543,6 @@ static unsigned int idev_ipv4_address(struct in_device *idev)
 {
 	unsigned int addr = 0;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
 	struct in_ifaddr *ifa;
 
 	rcu_read_lock();
@@ -6570,12 +6554,7 @@ static unsigned int idev_ipv4_address(struct in_device *idev)
 		break;
 	}
 	rcu_read_unlock();
-#else
-	for_primary_ifa(idev) {
-		addr = ifa->ifa_address;
-		break;
-	} endfor_ifa(idev);
-#endif
+
 	return addr;
 }
 
@@ -6617,22 +6596,12 @@ static int fsctl_query_iface_info_ioctl(struct cifsd_conn *conn,
 		nii_rsp->Next = cpu_to_le32(152);
 		nii_rsp->Reserved = 0;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 6, 0)
 		if (netdev->ethtool_ops->get_link_ksettings) {
 			struct ethtool_link_ksettings cmd;
 
 			netdev->ethtool_ops->get_link_ksettings(netdev, &cmd);
 			speed = cmd.base.speed;
-		}
-#else
-		if (netdev->ethtool_ops->get_settings) {
-			struct ethtool_cmd cmd;
-
-			netdev->ethtool_ops->get_settings(netdev, &cmd);
-			speed = cmd.speed;
-		}
-#endif
-		else {
+		} else {
 			cifsd_err("%s %s %s\n",
 				  netdev->name,
 				  "speed is unknown,",

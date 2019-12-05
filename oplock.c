@@ -10,9 +10,6 @@
 #include "oplock.h"
 
 #include "smb_common.h"
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-#include "smb1pdu.h"
-#endif
 #include "smbstatus.h"
 #include "buffer_pool.h"
 #include "connection.h"
@@ -48,9 +45,6 @@ static struct oplock_info *alloc_opinfo(struct cifsd_work *work,
 	opinfo->op_state = OPLOCK_STATE_NONE;
 	opinfo->fid = id;
 	opinfo->Tid = Tid;
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-	opinfo->is_smb2 = IS_SMB2(sess->conn);
-#endif
 	INIT_LIST_HEAD(&opinfo->op_entry);
 	INIT_LIST_HEAD(&opinfo->interim_list);
 	init_waitqueue_head(&opinfo->oplock_q);
@@ -197,28 +191,6 @@ int opinfo_write_to_read(struct oplock_info *opinfo)
 {
 	struct lease *lease = opinfo->o_lease;
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-	if (opinfo->is_smb2) {
-		if (!((opinfo->level == SMB2_OPLOCK_LEVEL_BATCH) ||
-			(opinfo->level == SMB2_OPLOCK_LEVEL_EXCLUSIVE))) {
-			cifsd_err("bad oplock(0x%x)\n", opinfo->level);
-			if (opinfo->is_lease)
-				cifsd_err("lease state(0x%x)\n", lease->state);
-			return -EINVAL;
-		}
-		opinfo->level = SMB2_OPLOCK_LEVEL_II;
-
-		if (opinfo->is_lease)
-			lease->state = lease->new_state;
-	} else {
-		if (!((opinfo->level == OPLOCK_EXCLUSIVE) ||
-			(opinfo->level == OPLOCK_BATCH))) {
-			cifsd_err("bad oplock(0x%x)\n", opinfo->level);
-			return -EINVAL;
-		}
-		opinfo->level = OPLOCK_READ;
-	}
-#else
 	if (!((opinfo->level == SMB2_OPLOCK_LEVEL_BATCH) ||
 	    (opinfo->level == SMB2_OPLOCK_LEVEL_EXCLUSIVE))) {
 		cifsd_err("bad oplock(0x%x)\n", opinfo->level);
@@ -230,7 +202,6 @@ int opinfo_write_to_read(struct oplock_info *opinfo)
 
 	if (opinfo->is_lease)
 		lease->state = lease->new_state;
-#endif
 	return 0;
 }
 
@@ -259,28 +230,6 @@ int opinfo_write_to_none(struct oplock_info *opinfo)
 {
 	struct lease *lease = opinfo->o_lease;
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-	if (opinfo->is_smb2) {
-		if (!((opinfo->level == SMB2_OPLOCK_LEVEL_BATCH) ||
-			(opinfo->level == SMB2_OPLOCK_LEVEL_EXCLUSIVE))) {
-			cifsd_err("bad oplock(0x%x)\n", opinfo->level);
-			if (opinfo->is_lease)
-				cifsd_err("lease state(0x%x)\n",
-						lease->state);
-			return -EINVAL;
-		}
-		opinfo->level = SMB2_OPLOCK_LEVEL_NONE;
-		if (opinfo->is_lease)
-			lease->state = lease->new_state;
-	} else {
-		if (!((opinfo->level == OPLOCK_EXCLUSIVE) ||
-			(opinfo->level == OPLOCK_BATCH))) {
-			cifsd_err("bad oplock(0x%x)\n", opinfo->level);
-			return -EINVAL;
-		}
-		opinfo->level = OPLOCK_NONE;
-	}
-#else
 	if (!((opinfo->level == SMB2_OPLOCK_LEVEL_BATCH) ||
 	    (opinfo->level == SMB2_OPLOCK_LEVEL_EXCLUSIVE))) {
 		cifsd_err("bad oplock(0x%x)\n", opinfo->level);
@@ -292,7 +241,6 @@ int opinfo_write_to_none(struct oplock_info *opinfo)
 	opinfo->level = SMB2_OPLOCK_LEVEL_NONE;
 	if (opinfo->is_lease)
 		lease->state = lease->new_state;
-#endif
 	return 0;
 }
 
@@ -306,25 +254,6 @@ int opinfo_read_to_none(struct oplock_info *opinfo)
 {
 	struct lease *lease = opinfo->o_lease;
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-	if (opinfo->is_smb2) {
-		if (opinfo->level != SMB2_OPLOCK_LEVEL_II) {
-			cifsd_err("bad oplock(0x%x)\n", opinfo->level);
-			if (opinfo->is_lease)
-				cifsd_err("lease state(0x%x)\n", lease->state);
-			return -EINVAL;
-		}
-		opinfo->level = SMB2_OPLOCK_LEVEL_NONE;
-		if (opinfo->is_lease)
-			lease->state = lease->new_state;
-	} else {
-		if (opinfo->level != OPLOCK_READ) {
-			cifsd_err("bad oplock(0x%x)\n", opinfo->level);
-			return -EINVAL;
-		}
-		opinfo->level = OPLOCK_NONE;
-	}
-#else
 	if (opinfo->level != SMB2_OPLOCK_LEVEL_II) {
 		cifsd_err("bad oplock(0x%x)\n", opinfo->level);
 		if (opinfo->is_lease)
@@ -334,7 +263,6 @@ int opinfo_read_to_none(struct oplock_info *opinfo)
 	opinfo->level = SMB2_OPLOCK_LEVEL_NONE;
 	if (opinfo->is_lease)
 		lease->state = lease->new_state;
-#endif
 	return 0;
 }
 
@@ -440,24 +368,10 @@ static void grant_write_oplock(struct oplock_info *opinfo_new, int req_oplock,
 {
 	struct lease *lease = opinfo_new->o_lease;
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-	if (opinfo_new->is_smb2) {
-		if (req_oplock == SMB2_OPLOCK_LEVEL_BATCH)
-			opinfo_new->level = SMB2_OPLOCK_LEVEL_BATCH;
-		else
-			opinfo_new->level = SMB2_OPLOCK_LEVEL_EXCLUSIVE;
-	} else {
-		if (req_oplock == REQ_BATCHOPLOCK)
-			opinfo_new->level = OPLOCK_BATCH;
-		else
-			opinfo_new->level = OPLOCK_EXCLUSIVE;
-	}
-#else
 	if (req_oplock == SMB2_OPLOCK_LEVEL_BATCH)
 		opinfo_new->level = SMB2_OPLOCK_LEVEL_BATCH;
 	else
 		opinfo_new->level = SMB2_OPLOCK_LEVEL_EXCLUSIVE;
-#endif
 
 	if (lctx) {
 		lease->state = lctx->req_state;
@@ -478,14 +392,7 @@ static void grant_read_oplock(struct oplock_info *opinfo_new,
 {
 	struct lease *lease = opinfo_new->o_lease;
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-	if (opinfo_new->is_smb2)
-		opinfo_new->level = SMB2_OPLOCK_LEVEL_II;
-	else
-		opinfo_new->level = OPLOCK_READ;
-#else
 	opinfo_new->level = SMB2_OPLOCK_LEVEL_II;
-#endif
 
 	if (lctx) {
 		lease->state = SMB2_LEASE_READ_CACHING_LE;
@@ -508,14 +415,7 @@ static void grant_none_oplock(struct oplock_info *opinfo_new,
 {
 	struct lease *lease = opinfo_new->o_lease;
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-	if (opinfo_new->is_smb2)
-		opinfo_new->level = SMB2_OPLOCK_LEVEL_NONE;
-	else
-		opinfo_new->level = OPLOCK_NONE;
-#else
 	opinfo_new->level = SMB2_OPLOCK_LEVEL_NONE;
-#endif
 
 	if (lctx) {
 		lease->state = 0;
@@ -612,127 +512,6 @@ static struct oplock_info *same_client_has_lease(struct cifsd_inode *ci,
 
 	return m_opinfo;
 }
-
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-/**
- * smb1_oplock_break_noti() - send smb1 oplock break cmd from conn
- * to client
- * @work:     smb work object
- *
- * There are two ways this function can be called. 1- while file open we break
- * from exclusive/batch lock to levelII oplock and 2- while file write/truncate
- * we break from levelII oplock no oplock.
- * REQUEST_BUF(work) contains oplock_info.
- */
-static void __smb1_oplock_break_noti(struct work_struct *wk)
-{
-	struct cifsd_work *work = container_of(wk, struct cifsd_work, work);
-	struct cifsd_conn *conn = work->conn;
-	struct smb_hdr *rsp_hdr;
-	struct smb_com_lock_req *req;
-	struct oplock_info *opinfo = REQUEST_BUF(work);
-
-	if (conn->ops->allocate_rsp_buf(work)) {
-		cifsd_err("smb_allocate_rsp_buf failed! ");
-		cifsd_free_work_struct(work);
-		return;
-	}
-
-	/* Init response header */
-	rsp_hdr = RESPONSE_BUF(work);
-	/* wct is 8 for locking andx(18) */
-	memset(rsp_hdr, 0, sizeof(struct smb_hdr) + 18);
-	rsp_hdr->smb_buf_length = cpu_to_be32(HEADER_SIZE_NO_BUF_LEN(conn)
-		+ 18);
-	rsp_hdr->Protocol[0] = 0xFF;
-	rsp_hdr->Protocol[1] = 'S';
-	rsp_hdr->Protocol[2] = 'M';
-	rsp_hdr->Protocol[3] = 'B';
-
-	rsp_hdr->Command = SMB_COM_LOCKING_ANDX;
-	/* we know unicode, long file name and use nt error codes */
-	rsp_hdr->Flags2 = SMBFLG2_UNICODE | SMBFLG2_KNOWS_LONG_NAMES |
-		SMBFLG2_ERR_STATUS;
-	rsp_hdr->Uid = cpu_to_le16(work->sess->id);
-	rsp_hdr->Pid = cpu_to_le16(0xFFFF);
-	rsp_hdr->Mid = cpu_to_le16(0xFFFF);
-	rsp_hdr->Tid = cpu_to_le16(opinfo->Tid);
-	rsp_hdr->WordCount = 8;
-
-	/* Init locking request */
-	req = RESPONSE_BUF(work);
-
-	req->AndXCommand = 0xFF;
-	req->AndXReserved = 0;
-	req->AndXOffset = 0;
-	req->Fid = opinfo->fid;
-	req->LockType = LOCKING_ANDX_OPLOCK_RELEASE;
-	if (!opinfo->open_trunc && (opinfo->level == OPLOCK_BATCH ||
-			opinfo->level == OPLOCK_EXCLUSIVE))
-		req->OplockLevel = 1;
-	else {
-		req->OplockLevel = 0;
-	}
-	req->Timeout = 0;
-	req->NumberOfUnlocks = 0;
-	req->ByteCount = 0;
-	cifsd_debug("sending oplock break for fid %d lock level = %d\n",
-			req->Fid, req->OplockLevel);
-
-	cifsd_conn_write(work);
-	cifsd_free_work_struct(work);
-}
-
-/**
- * smb1_oplock_break() - send smb1 exclusive/batch to level2 oplock
- *		break command from server to client
- * @opinfo:		oplock info object
- * @ack_required	if requiring ack
- *
- * Return:      0 on success, otherwise error
- */
-static int smb1_oplock_break_noti(struct oplock_info *opinfo, int ack_required)
-{
-	struct cifsd_conn *conn = opinfo->conn;
-	int ret = 0;
-	struct cifsd_work *work = cifsd_alloc_work_struct();
-
-	if (!work)
-		return -ENOMEM;
-
-	work->request_buf = (char *)opinfo;
-	work->conn = conn;
-
-	if (ack_required) {
-		int rc;
-
-		INIT_WORK(&work->work, __smb1_oplock_break_noti);
-		cifsd_queue_work(work);
-
-		/*
-		 * TODO: change to wait_event_interruptible_timeout once oplock
-		 * break notification timeout is decided. In case of oplock
-		 * break from levelII to none, we don't need to wait for client
-		 * response.
-		 */
-		rc = wait_event_interruptible_timeout(opinfo->oplock_q,
-				opinfo->op_state == OPLOCK_STATE_NONE ||
-				opinfo->op_state == OPLOCK_CLOSING,
-				OPLOCK_WAIT_TIME);
-
-		/* is this a timeout ? */
-		if (!rc) {
-			opinfo->level = OPLOCK_NONE;
-			opinfo->op_state = OPLOCK_STATE_NONE;
-		}
-	} else {
-		__smb1_oplock_break_noti(&work->work);
-		if (opinfo->level == OPLOCK_READ)
-			opinfo->level = OPLOCK_NONE;
-	}
-	return ret;
-}
-#endif
 
 /**
  * smb2_oplock_break_noti() - send smb2 oplock break cmd from conn
@@ -1061,35 +840,6 @@ static int oplock_break(struct oplock_info *brk_opinfo)
 		brk_opinfo->level == SMB2_OPLOCK_LEVEL_EXCLUSIVE)
 		brk_opinfo->op_state = OPLOCK_ACK_WAIT;
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-	if (brk_opinfo->is_smb2) {
-		if (brk_opinfo->is_lease) {
-			struct lease *lease = brk_opinfo->o_lease;
-
-			if ((brk_opinfo->open_trunc == 1 &&
-				!(lease->state &
-					SMB2_LEASE_WRITE_CACHING_LE)) ||
-				lease->state == SMB2_LEASE_READ_CACHING_LE)
-				ack_required = 0;
-			else
-				ack_required = 1;
-
-			err = smb2_break_lease_noti(brk_opinfo, ack_required);
-		} else {
-			/* break oplock */
-			if (brk_opinfo->level == SMB2_OPLOCK_LEVEL_BATCH ||
-				brk_opinfo->level ==
-				SMB2_OPLOCK_LEVEL_EXCLUSIVE)
-				ack_required = 1;
-			err = smb2_oplock_break_noti(brk_opinfo, ack_required);
-		}
-	} else {
-		if ((brk_opinfo->level == SMB2_OPLOCK_LEVEL_BATCH) ||
-			(brk_opinfo->level == SMB2_OPLOCK_LEVEL_EXCLUSIVE))
-			ack_required = 1;
-		err = smb1_oplock_break_noti(brk_opinfo, ack_required);
-	}
-#else
 	if (brk_opinfo->is_lease) {
 		struct lease *lease = brk_opinfo->o_lease;
 
@@ -1110,7 +860,6 @@ static int oplock_break(struct oplock_info *brk_opinfo)
 			ack_required = 1;
 		err = smb2_oplock_break_noti(brk_opinfo, ack_required);
 	}
-#endif
 
 	cifsd_debug("oplock granted = %d\n", brk_opinfo->level);
 	if (brk_opinfo->op_state == OPLOCK_CLOSING) {
@@ -1248,10 +997,6 @@ static void set_oplock_level(struct oplock_info *opinfo, int level,
 	struct lease_ctx_info *lctx)
 {
 	switch (level) {
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-	case REQ_OPLOCK:
-	case REQ_BATCHOPLOCK:
-#endif
 	case SMB2_OPLOCK_LEVEL_BATCH:
 	case SMB2_OPLOCK_LEVEL_EXCLUSIVE:
 		grant_write_oplock(opinfo,
@@ -1456,35 +1201,6 @@ void smb_break_all_levII_oplock(struct cifsd_work *work,
 		if (!atomic_inc_not_zero(&brk_op->refcount))
 			continue;
 		rcu_read_unlock();
-
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-		if (brk_op->is_smb2) {
-			if (brk_op->is_lease && (brk_op->o_lease->state &
-					(~(SMB2_LEASE_READ_CACHING_LE |
-					   SMB2_LEASE_HANDLE_CACHING_LE)))) {
-				cifsd_debug("unexpected lease state(0x%x)\n",
-						brk_op->o_lease->state);
-				goto next;
-			} else if (brk_op->level !=
-					SMB2_OPLOCK_LEVEL_II) {
-				cifsd_debug("unexpected oplock(0x%x)\n",
-						brk_op->level);
-				goto next;
-			}
-
-			/* Skip oplock being break to none */
-			if (brk_op->is_lease && (brk_op->o_lease->new_state ==
-					SMB2_LEASE_NONE_LE) &&
-				atomic_read(&brk_op->breaking_cnt))
-				goto next;
-		} else {
-			if (brk_op->level != OPLOCK_READ) {
-				cifsd_debug("unexpected oplock(0x%x)\n",
-					brk_op->level);
-				goto next;
-			}
-		}
-#else
 		if (brk_op->is_lease && (brk_op->o_lease->state &
 		    (~(SMB2_LEASE_READ_CACHING_LE |
 				SMB2_LEASE_HANDLE_CACHING_LE)))) {
@@ -1503,7 +1219,6 @@ void smb_break_all_levII_oplock(struct cifsd_work *work,
 				SMB2_LEASE_NONE_LE) &&
 		    atomic_read(&brk_op->breaking_cnt))
 			goto next;
-#endif
 
 		if (op->is_lease &&
 			brk_op->is_lease &&

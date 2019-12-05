@@ -5,9 +5,6 @@
  */
 
 #include "smb_common.h"
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-#include "smb1pdu.h"
-#endif
 #include "server.h"
 #include "misc.h"
 #include "smbstatus.h"
@@ -22,11 +19,7 @@ static const char basechars[43] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_-!@#$%";
 #define PERIOD '.'
 #define mangle(V) ((char)(basechars[(V) % MANGLE_BASE]))
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-#define CIFSD_MIN_SUPPORTED_HEADER_SIZE	(sizeof(struct smb_hdr))
-#else
 #define CIFSD_MIN_SUPPORTED_HEADER_SIZE	(sizeof(struct smb2_hdr))
-#endif
 
 LIST_HEAD(global_lock_list);
 
@@ -38,20 +31,6 @@ struct smb_protocol {
 };
 
 static struct smb_protocol smb_protos[] = {
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-	{
-		SMB1_PROT,
-		"\2NT LM 0.12",
-		"NT1",
-		SMB10_PROT_ID
-	},
-	{
-		SMB2_PROT,
-		"\2SMB 2.002",
-		"SMB2_02",
-		SMB20_PROT_ID
-	},
-#endif
 	{
 		SMB21_PROT,
 		"\2SMB 2.1",
@@ -106,11 +85,7 @@ unsigned int cifsd_server_side_copy_max_total_size(void)
 
 inline int cifsd_min_protocol(void)
 {
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-	return SMB1_PROT;
-#else
 	return SMB2_PROT;
-#endif
 }
 
 inline int cifsd_max_protocol(void)
@@ -146,19 +121,10 @@ int cifsd_verify_smb_message(struct cifsd_work *work)
 {
 	struct smb2_hdr *smb2_hdr = REQUEST_BUF(work);
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-	if (smb2_hdr->ProtocolId == SMB2_PROTO_NUMBER) {
-		cifsd_debug("got SMB2 command\n");
-		return cifsd_smb2_check_message(work);
-	}
-
-	return cifsd_smb1_check_message(work);
-#else
 	if (smb2_hdr->ProtocolId != SMB2_PROTO_NUMBER)
 		return 1;
 
 	return cifsd_smb2_check_message(work);
-#endif
 }
 
 /**
@@ -296,14 +262,7 @@ int cifsd_init_smb_server(struct cifsd_work *work)
 		return 0;
 
 	proto = *(__le32 *)((struct smb_hdr *)buf)->Protocol;
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-	if (proto == SMB1_PROTO_NUMBER)
-		init_smb1_server(conn);
-	else
-		cifsd_init_smb2_server_common(conn);
-#else
 	cifsd_init_smb2_server_common(conn);
-#endif
 
 	if (conn->ops->get_cmd_val(work) != SMB_COM_NEGOTIATE)
 		conn->need_neg = false;
@@ -392,12 +351,7 @@ int cifsd_extract_shortname(struct cifsd_conn *conn,
 
 	p = strrchr(longname, '.');
 	if (p == longname) { /*name starts with a dot*/
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 3, 0)
-		strcpy(extension, "___");
-		extension[3] = '\0';
-#else
 		strscpy(extension, "___", strlen("___"));
-#endif
 	} else {
 		if (p != NULL) {
 			p++;
@@ -451,7 +405,6 @@ static int __smb2_negotiate(struct cifsd_conn *conn)
 			conn->dialect <= SMB311_PROT_ID);
 }
 
-#ifndef CONFIG_CIFS_INSECURE_SERVER
 int smb_handle_negotiate(struct cifsd_work *work)
 {
 	struct smb_negotiate_rsp *neg_rsp = RESPONSE_BUF(work);
@@ -460,7 +413,6 @@ int smb_handle_negotiate(struct cifsd_work *work)
 	neg_rsp->hdr.Status.CifsError = STATUS_INVALID_LOGON_TYPE;
 	return -EINVAL;
 }
-#endif
 
 int cifsd_smb_negotiate_common(struct cifsd_work *work, unsigned int command)
 {

@@ -224,23 +224,6 @@ struct cifsd_session *cifsd_session_lookup_slowpath(unsigned long long id)
 	return sess;
 }
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-static int __init_smb1_session(struct cifsd_session *sess)
-{
-	int id = cifds_acquire_smb1_uid(session_ida);
-
-	if (id < 0)
-		return -EINVAL;
-	sess->id = id;
-	return 0;
-}
-#else
-static int __init_smb1_session(struct cifsd_session *sess)
-{
-	return -EINVAL;
-}
-#endif
-
 static int __init_smb2_session(struct cifsd_session *sess)
 {
 	int id = cifds_acquire_smb2_uid(session_ida);
@@ -271,9 +254,6 @@ static struct cifsd_session *__session_create(int protocol)
 	sess->sequence_number = 1;
 
 	switch (protocol) {
-	case CIFDS_SESSION_FLAG_SMB1:
-		ret = __init_smb1_session(sess);
-		break;
 	case CIFDS_SESSION_FLAG_SMB2:
 		ret = __init_smb2_session(sess);
 		break;

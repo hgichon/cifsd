@@ -21,7 +21,6 @@ cifsd-y :=	unicode.o auth.o vfs.o vfs_cache.o \
 		connection.o crypto_ctx.o cifsd_work.o
 
 cifsd-y +=	smb2pdu.o smb2ops.o smb2misc.o asn1.o
-cifsd-$(CONFIG_CIFS_INSECURE_SERVER) += smb1pdu.o smb1ops.o smb1misc.o
 cifsd-$(CONFIG_CIFS_SERVER_SMBDIRECT) += transport_smbd.o
 else
 # For external module build

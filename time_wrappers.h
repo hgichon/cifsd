@@ -32,7 +32,6 @@ static inline struct timespec cifs_NTtimeToUnix(__le64 ntutc)
 	return ts;
 }
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 18, 0)
 static inline struct timespec64 to_kern_timespec(struct timespec ts)
 {
 	return timespec_to_timespec64(ts);
@@ -42,29 +41,14 @@ static inline struct timespec from_kern_timespec(struct timespec64 ts)
 {
 	return timespec64_to_timespec(ts);
 }
-#else
-#define to_kern_timespec(ts) (ts)
-#define from_kern_timespec(ts) (ts)
-#endif
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 20, 0)
 #define CIFSD_TIME_TO_TM	time64_to_tm
-#else
-#define CIFSD_TIME_TO_TM	time_to_tm
-#endif
 
 static inline long long cifsd_systime(void)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
-	struct timespec64	ts;
-
-	getnstimeofday64(&ts);
-	return cifs_UnixTimeToNT(timespec64_to_timespec(ts));
-#else
 	struct timespec		ts;
 
 	getnstimeofday(&ts);
 	return cifs_UnixTimeToNT(ts);
-#endif
 }
 #endif /* __CIFSD_TIME_WRAPPERS_H */

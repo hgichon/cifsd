@@ -14,29 +14,6 @@
 #include "glob.h"
 #include "smb_common.h"
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-int smb1_utf16_name_length(const __le16 *from, int maxbytes)
-{
-	int i, len = 0;
-	int maxwords = maxbytes / 2;
-	__u16 ftmp;
-
-	for (i = 0; i < maxwords; i++) {
-		ftmp = get_unaligned_le16(&from[i]);
-		len += 2;
-		if (ftmp == 0)
-			break;
-	}
-
-	return len;
-}
-#else
-int smb1_utf16_name_length(const __le16 *from, int maxbytes)
-{
-	return -ENOTSUPP;
-}
-#endif
-
 /*
  * smb_utf16_bytes() - how long will a string be after conversion?
  * @from:	pointer to input string
@@ -320,11 +297,7 @@ smb_strndup_from_utf16(const char *src, const int maxlen,
 		dst = kmalloc(len, GFP_KERNEL);
 		if (!dst)
 			return ERR_PTR(-ENOMEM);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 3, 0)
-		strlcpy(dst, src, len);
-#else
 		strscpy(dst, src, len);
-#endif
 	}
 
 	return dst;

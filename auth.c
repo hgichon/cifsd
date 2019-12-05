@@ -660,70 +660,6 @@ cifsd_build_ntlmssp_challenge_blob(struct challenge_message *chgblob,
 	return blob_len;
 }
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-/**
- * cifsd_sign_smb1_pdu() - function to generate SMB1 packet signing
- * @sess:	session of connection
- * @iov:        buffer iov array
- * @n_vec:	number of iovecs
- * @sig:        signature value generated for client request packet
- *
- */
-int cifsd_sign_smb1_pdu(struct cifsd_session *sess,
-			struct kvec *iov,
-			int n_vec,
-			char *sig)
-{
-	struct cifsd_crypto_ctx *ctx;
-	int rc = -EINVAL;
-	int i;
-
-	ctx = cifsd_crypto_ctx_find_md5();
-	if (!ctx) {
-		cifsd_debug("could not crypto alloc md5 rc %d\n", rc);
-		goto out;
-	}
-
-	rc = crypto_shash_init(CRYPTO_MD5(ctx));
-	if (rc) {
-		cifsd_debug("md5 init error %d\n", rc);
-		goto out;
-	}
-
-	rc = crypto_shash_update(CRYPTO_MD5(ctx), sess->sess_key, 40);
-	if (rc) {
-		cifsd_debug("md5 update error %d\n", rc);
-		goto out;
-	}
-
-	for (i = 0; i < n_vec; i++) {
-		rc = crypto_shash_update(CRYPTO_MD5(ctx),
-					 iov[i].iov_base,
-					 iov[i].iov_len);
-		if (rc) {
-			cifsd_debug("md5 update error %d\n", rc);
-			goto out;
-		}
-	}
-
-	rc = crypto_shash_final(CRYPTO_MD5(ctx), sig);
-	if (rc)
-		cifsd_debug("md5 generation error %d\n", rc);
-
-out:
-	cifsd_release_crypto_ctx(ctx);
-	return rc;
-}
-#else
-int cifsd_sign_smb1_pdu(struct cifsd_session *sess,
-			struct kvec *iov,
-			int n_vec,
-			char *sig)
-{
-	return -ENOTSUPP;
-}
-#endif
-
 /**
  * cifsd_sign_smb2_pdu() - function to generate packet signing
  * @conn:	connection
@@ -1118,25 +1054,6 @@ static int cifsd_get_encryption_key(struct cifsd_conn *conn,
 	return 0;
 }
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 2, 0)
-static struct scatterlist *cifsd_init_sg(struct kvec *iov,
-					 unsigned int nvec,
-					 u8 *sign)
-{
-	struct scatterlist *sg;
-	unsigned int i = 0;
-
-	sg = kmalloc_array(nvec, sizeof(struct scatterlist), GFP_KERNEL);
-	if (!sg)
-		return NULL;
-
-	sg_init_table(sg, nvec);
-	for (i = 0; i < nvec - 1; i++)
-		sg_set_buf(&sg[i], iov[i + 1].iov_base, iov[i + 1].iov_len);
-	sg_set_buf(&sg[nvec - 1], sign, SMB2_SIGNATURE_SIZE);
-	return sg;
-}
-#else
 static struct scatterlist *cifsd_init_sg(struct kvec *iov,
 					 unsigned int nvec,
 					 u8 *sign)
@@ -1156,7 +1073,6 @@ static struct scatterlist *cifsd_init_sg(struct kvec *iov,
 	sg_set_buf(&sg[nvec], sign, SMB2_SIGNATURE_SIZE);
 	return sg;
 }
-#endif
 
 int cifsd_crypt_message(struct cifsd_conn *conn,
 			struct kvec *iov,
@@ -1175,9 +1091,6 @@ int cifsd_crypt_message(struct cifsd_conn *conn,
 	unsigned int iv_len;
 	struct crypto_aead *tfm;
 	unsigned int crypt_len = le32_to_cpu(tr_hdr->OriginalMessageSize);
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 2, 0)
-	struct scatterlist assoc;
-#endif
 	struct cifsd_crypto_ctx *ctx;
 
 	rc = cifsd_get_encryption_key(conn,
@@ -1226,10 +1139,6 @@ int cifsd_crypt_message(struct cifsd_conn *conn,
 		crypt_len += SMB2_SIGNATURE_SIZE;
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 2, 0)
-	sg_init_one(&assoc, iov[0].iov_base + 24, assoc_data_len);
-#endif
-
 	sg = cifsd_init_sg(iov, nvec, sign);
 	if (!sg) {
 		cifsd_err("Failed to init sg\n");
@@ -1252,13 +1161,8 @@ int cifsd_crypt_message(struct cifsd_conn *conn,
 		memcpy(iv + 1, (char *)tr_hdr->Nonce, SMB3_AES128CCM_NONCE);
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 2, 0)
-	aead_request_set_assoc(req, &assoc, assoc_data_len);
-	aead_request_set_crypt(req, sg, sg, crypt_len, iv);
-#else
 	aead_request_set_crypt(req, sg, sg, crypt_len, iv);
 	aead_request_set_ad(req, assoc_data_len);
-#endif
 	aead_request_set_callback(req, CRYPTO_TFM_REQ_MAY_SLEEP, NULL, NULL);
 
 	if (enc)

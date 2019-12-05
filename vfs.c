@@ -20,11 +20,7 @@
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
 #include <linux/sched/xacct.h>
-#else
-#include <linux/sched.h>
-#endif
 
 #include "glob.h"
 #include "oplock.h"
@@ -330,9 +326,6 @@ int cifsd_vfs_read(struct cifsd_work *work,
 	struct inode *inode;
 	char namebuf[NAME_MAX];
 	int ret;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
-	mm_segment_t old_fs;
-#endif
 
 	rbuf = AUX_PAYLOAD(work);
 	filp = fp->filp;
@@ -362,15 +355,7 @@ int cifsd_vfs_read(struct cifsd_work *work,
 		return -EAGAIN;
 	}
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
-
-	nbytes = vfs_read(filp, rbuf, count, pos);
-	set_fs(old_fs);
-#else
 	nbytes = kernel_read(filp, rbuf, count, pos);
-#endif
 	if (nbytes < 0) {
 		name = d_path(&filp->f_path, namebuf, sizeof(namebuf));
 		if (IS_ERR(name))
@@ -458,9 +443,6 @@ int cifsd_vfs_write(struct cifsd_work *work, struct cifsd_file *fp,
 	struct file *filp;
 	loff_t	offset = *pos;
 	int err = 0;
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
-	mm_segment_t old_fs;
-#endif
 
 	if (sess->conn->connection_type) {
 		if (!(fp->daccess & (FILE_WRITE_DATA_LE |
@@ -491,15 +473,7 @@ int cifsd_vfs_write(struct cifsd_work *work, struct cifsd_file *fp,
 	/* Do we need to break any of a levelII oplock? */
 	smb_break_all_levII_oplock(work, fp, 1);
 
-#if LINUX_VERSION_CODE < KERNEL_VERSION(4, 14, 0)
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
-	err = vfs_write(filp, buf, count, pos);
-	set_fs(old_fs);
-#else
 	err = kernel_write(filp, buf, count, pos);
-#endif
-
 	if (err < 0) {
 		cifsd_debug("smb write failed, err = %d\n", err);
 		goto out;
@@ -575,313 +549,6 @@ static void __file_dentry_ctime(struct cifsd_work *work,
 	}
 }
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-/**
- * smb_check_attrs() - sanitize inode attributes
- * @inode:	inode
- * @attrs:	inode attributes
- */
-static void smb_check_attrs(struct inode *inode, struct iattr *attrs)
-{
-	/* sanitize the mode change */
-	if (attrs->ia_valid & ATTR_MODE) {
-		attrs->ia_mode &= S_IALLUGO;
-		attrs->ia_mode |= (inode->i_mode & ~S_IALLUGO);
-	}
-
-	/* Revoke setuid/setgid on chown */
-	if (!S_ISDIR(inode->i_mode) &&
-		(((attrs->ia_valid & ATTR_UID) &&
-				!uid_eq(attrs->ia_uid, inode->i_uid)) ||
-		 ((attrs->ia_valid & ATTR_GID) &&
-				!gid_eq(attrs->ia_gid, inode->i_gid)))) {
-		attrs->ia_valid |= ATTR_KILL_PRIV;
-		if (attrs->ia_valid & ATTR_MODE) {
-			/* we're setting mode too, just clear the s*id bits */
-			attrs->ia_mode &= ~S_ISUID;
-			if (attrs->ia_mode & 0010)
-				attrs->ia_mode &= ~S_ISGID;
-		} else {
-			/* set ATTR_KILL_* bits and let VFS handle it */
-			attrs->ia_valid |= (ATTR_KILL_SUID | ATTR_KILL_SGID);
-		}
-	}
-}
-
-/**
- * cifsd_vfs_setattr() - vfs helper for smb setattr
- * @work:	work
- * @name:	file name
- * @fid:	file id of open file
- * @attrs:	inode attributes
- *
- * Return:	0 on success, otherwise error
- */
-int cifsd_vfs_setattr(struct cifsd_work *work, const char *name,
-		uint64_t fid, struct iattr *attrs)
-{
-	struct file *filp;
-	struct dentry *dentry;
-	struct inode *inode;
-	struct path path;
-	bool update_size = false;
-	int err = 0;
-	struct cifsd_file *fp = NULL;
-
-	if (name) {
-		err = kern_path(name, 0, &path);
-		if (err) {
-			cifsd_debug("lookup failed for %s, err = %d\n",
-					name, err);
-			return -ENOENT;
-		}
-		dentry = path.dentry;
-		inode = d_inode(dentry);
-	} else {
-
-		fp = cifsd_lookup_fd_fast(work, fid);
-		if (!fp) {
-			cifsd_err("failed to get filp for fid %llu\n", fid);
-			return -ENOENT;
-		}
-
-		filp = fp->filp;
-		dentry = filp->f_path.dentry;
-		inode = d_inode(dentry);
-	}
-
-	/* no need to update mode of symlink */
-	if (S_ISLNK(inode->i_mode))
-		attrs->ia_valid &= ~ATTR_MODE;
-
-	/* skip setattr, if nothing to update */
-	if (!attrs->ia_valid) {
-		err = 0;
-		goto out;
-	}
-
-	smb_check_attrs(inode, attrs);
-	if (attrs->ia_valid & ATTR_SIZE) {
-		err = get_write_access(inode);
-		if (err)
-			goto out;
-
-		err = locks_verify_truncate(inode, NULL, attrs->ia_size);
-		if (err) {
-			put_write_access(inode);
-			goto out;
-		}
-		update_size = true;
-	}
-
-	attrs->ia_valid |= ATTR_CTIME;
-
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0)
-	inode_lock(inode);
-	err = notify_change(dentry, attrs, NULL);
-	inode_unlock(inode);
-#else
-	mutex_lock(&inode->i_mutex);
-	err = notify_change(dentry, attrs, NULL);
-	mutex_unlock(&inode->i_mutex);
-#endif
-
-	if (update_size)
-		put_write_access(inode);
-
-	if (!err) {
-		sync_inode_metadata(inode, 1);
-		cifsd_debug("fid %llu, setattr done\n", fid);
-	}
-
-out:
-	if (name)
-		path_put(&path);
-	cifsd_fd_put(work, fp);
-	return err;
-}
-
-/**
- * cifsd_vfs_getattr() - vfs helper for smb getattr
- * @work:	work
- * @fid:	file id of open file
- * @attrs:	inode attributes
- *
- * Return:	0 on success, otherwise error
- */
-int cifsd_vfs_getattr(struct cifsd_work *work, uint64_t fid,
-		struct kstat *stat)
-{
-	struct file *filp;
-	struct cifsd_file *fp;
-	int err;
-
-	fp = cifsd_lookup_fd_fast(work, fid);
-	if (!fp) {
-		cifsd_err("failed to get filp for fid %llu\n", fid);
-		return -ENOENT;
-	}
-
-	filp = fp->filp;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 11, 0)
-	err = vfs_getattr(&filp->f_path, stat, STATX_BASIC_STATS,
-		AT_STATX_SYNC_AS_STAT);
-#else
-	err = vfs_getattr(&filp->f_path, stat);
-#endif
-	if (err)
-		cifsd_err("getattr failed for fid %llu, err %d\n", fid, err);
-	cifsd_fd_put(work, fp);
-	return err;
-}
-
-/**
- * cifsd_vfs_symlink() - vfs helper for creating smb symlink
- * @name:	source file name
- * @symname:	symlink name
- *
- * Return:	0 on success, otherwise error
- */
-int cifsd_vfs_symlink(const char *name, const char *symname)
-{
-	struct path path;
-	struct dentry *dentry;
-	int err;
-
-	dentry = kern_path_create(AT_FDCWD, symname, &path, 0);
-	if (IS_ERR(dentry)) {
-		err = PTR_ERR(dentry);
-		cifsd_err("path create failed for %s, err %d\n", name, err);
-		return err;
-	}
-
-	err = vfs_symlink(d_inode(dentry->d_parent), dentry, name);
-	if (err && (err != -EEXIST || err != -ENOSPC))
-		cifsd_debug("failed to create symlink, err %d\n", err);
-
-	done_path_create(&path, dentry);
-
-	return err;
-}
-
-/**
- * cifsd_vfs_readlink() - vfs helper for reading value of symlink
- * @path:	path of symlink
- * @buf:	destination buffer for symlink value
- * @lenp:	destination buffer length
- *
- * Return:	symlink value length on success, otherwise error
- */
-int cifsd_vfs_readlink(struct path *path, char *buf, int lenp)
-{
-	struct inode *inode;
-	mm_segment_t old_fs;
-	int err;
-
-	if (!path)
-		return -ENOENT;
-
-	inode = d_inode(path->dentry);
-	if (!S_ISLNK(inode->i_mode))
-		return -EINVAL;
-
-	old_fs = get_fs();
-	set_fs(KERNEL_DS);
-	err = inode->i_op->readlink(path->dentry, (char __user *)buf, lenp);
-	set_fs(old_fs);
-	if (err < 0)
-		cifsd_err("readlink failed, err = %d\n", err);
-
-	return err;
-}
-
-static void fill_file_attributes(struct cifsd_work *work,
-				 struct path *path,
-				 struct cifsd_kstat *cifsd_kstat)
-{
-	__fill_dentry_attributes(work, path->dentry, cifsd_kstat);
-}
-
-static void fill_create_time(struct cifsd_work *work,
-			     struct path *path,
-			     struct cifsd_kstat *cifsd_kstat)
-{
-	__file_dentry_ctime(work, path->dentry, cifsd_kstat);
-}
-
-int cifsd_vfs_readdir_name(struct cifsd_work *work,
-			   struct cifsd_kstat *cifsd_kstat,
-			   const char *de_name,
-			   int de_name_len,
-			   const char *dir_path)
-{
-	struct path path;
-	int rc, file_pathlen, dir_pathlen;
-	char *name;
-
-	dir_pathlen = strlen(dir_path);
-	/* 1 for '/'*/
-	file_pathlen = dir_pathlen +  de_name_len + 1;
-	name = kmalloc(file_pathlen + 1, GFP_KERNEL);
-	if (!name)
-		return -ENOMEM;
-
-	memcpy(name, dir_path, dir_pathlen);
-	memset(name + dir_pathlen, '/', 1);
-	memcpy(name + dir_pathlen + 1, de_name, de_name_len);
-	name[file_pathlen] = '\0';
-
-	rc = cifsd_vfs_kern_path(name, LOOKUP_FOLLOW, &path, 1);
-	if (rc) {
-		cifsd_err("lookup failed: %s [%d]\n", name, rc);
-		kfree(name);
-		return -ENOMEM;
-	}
-
-	generic_fillattr(d_inode(path.dentry), cifsd_kstat->kstat);
-	fill_create_time(work, &path, cifsd_kstat);
-	fill_file_attributes(work, &path, cifsd_kstat);
-	path_put(&path);
-	kfree(name);
-	return 0;
-}
-#else
-static inline void smb_check_attrs(struct inode *inode, struct iattr *attrs)
-{
-}
-
-int cifsd_vfs_setattr(struct cifsd_work *work, const char *name,
-		      uint64_t fid, struct iattr *attrs)
-{
-	return -ENOTSUPP;
-}
-
-int cifsd_vfs_getattr(struct cifsd_work *work, uint64_t fid,
-		      struct kstat *stat)
-{
-	return -ENOTSUPP;
-}
-
-int cifsd_vfs_symlink(const char *name, const char *symname)
-{
-	return -ENOTSUPP;
-}
-
-int cifsd_vfs_readlink(struct path *path, char *buf, int lenp)
-{
-	return -ENOTSUPP;
-}
-
-int cifsd_vfs_readdir_name(struct cifsd_work *work,
-			   struct cifsd_kstat *cifsd_kstat,
-			   const char *de_name,
-			   int de_name_len,
-			   const char *dir_path)
-{
-	return 0;
-}
-#endif
-
 /**
  * cifsd_vfs_fsync() - vfs helper for smb fsync
  * @work:	work
@@ -934,11 +601,7 @@ int cifsd_vfs_remove_file(char *name)
 	if (!d_inode(dir))
 		goto out;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0)
 	inode_lock_nested(d_inode(dir), I_MUTEX_PARENT);
-#else
-	mutex_lock_nested(&d_inode(dir)->i_mutex, I_MUTEX_PARENT);
-#endif
 	dentry = lookup_one_len(last, dir, strlen(last));
 	if (IS_ERR(dentry)) {
 		err = PTR_ERR(dentry);
@@ -964,11 +627,7 @@ int cifsd_vfs_remove_file(char *name)
 
 	dput(dentry);
 out_err:
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0)
 	inode_unlock(d_inode(dir));
-#else
-	mutex_unlock(&d_inode(dir)->i_mutex);
-#endif
 out:
 	roolback_path_modification(last);
 	path_put(&parent);
@@ -1120,71 +779,6 @@ out:
 	dput(src_dent_parent);
 	return err;
 }
-
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-int cifsd_vfs_rename_slowpath(char *oldname, char *newname)
-{
-	struct path dst_path, src_path;
-	struct dentry *src_dent_parent, *dst_dent_parent;
-	struct dentry *src_dent = NULL, *trap_dent;
-	char *src_name, *dst_name;
-	int err;
-
-	src_name = extract_last_component(oldname);
-	if (!src_name)
-		return -EINVAL;
-	dst_name = extract_last_component(newname);
-	if (!dst_name)
-		return -EINVAL;
-
-	err = kern_path(oldname, LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &src_path);
-	if (err) {
-		cifsd_err("Cannot get path for %s [%d]\n", oldname, err);
-		return err;
-	}
-	src_dent_parent = src_path.dentry;
-	dget(src_dent_parent);
-
-	err = kern_path(newname, LOOKUP_FOLLOW | LOOKUP_DIRECTORY, &dst_path);
-	if (err) {
-		cifsd_err("Cannot get path for %s [%d]\n", newname, err);
-		dput(src_dent_parent);
-		path_put(&src_path);
-		return err;
-	}
-	dst_dent_parent = dst_path.dentry;
-	dget(dst_dent_parent);
-
-	trap_dent = lock_rename(src_dent_parent, dst_dent_parent);
-	src_dent = lookup_one_len(src_name, src_dent_parent, strlen(src_name));
-	err = PTR_ERR(src_dent);
-	if (IS_ERR(src_dent)) {
-		src_dent = NULL;
-		cifsd_err("%s lookup failed with error = %d\n", src_name, err);
-		goto out;
-	}
-
-	err = __cifsd_vfs_rename(src_dent_parent,
-				 src_dent,
-				 dst_dent_parent,
-				 trap_dent,
-				 dst_name);
-out:
-	if (src_dent)
-		dput(src_dent);
-	dput(dst_dent_parent);
-	dput(src_dent_parent);
-	unlock_rename(src_dent_parent, dst_dent_parent);
-	path_put(&src_path);
-	path_put(&dst_path);
-	return err;
-}
-#else
-int cifsd_vfs_rename_slowpath(char *oldname, char *newname)
-{
-	return 0;
-}
-#endif
 
 /**
  * cifsd_vfs_truncate() - vfs helper for smb file truncate
@@ -1340,43 +934,6 @@ int cifsd_vfs_setxattr(struct dentry *dentry,
 	return err;
 }
 
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-int cifsd_vfs_fsetxattr(const char *filename,
-			const char *attr_name,
-			const void *attr_value,
-			size_t attr_size,
-			int flags)
-{
-	struct path path;
-	int err;
-
-	err = kern_path(filename, 0, &path);
-	if (err) {
-		cifsd_debug("cannot get linux path %s, err %d\n",
-				filename, err);
-		return err;
-	}
-	err = vfs_setxattr(path.dentry,
-			   attr_name,
-			   attr_value,
-			   attr_size,
-			   flags);
-	if (err)
-		cifsd_debug("setxattr failed, err %d\n", err);
-	path_put(&path);
-	return err;
-}
-#else
-int cifsd_vfs_fsetxattr(const char *filename,
-			const char *attr_name,
-			const void *attr_value,
-			size_t attr_size,
-			int flags)
-{
-	return -ENOTSUPP;
-}
-#endif
-
 int cifsd_vfs_truncate_xattr(struct dentry *dentry, int wo_streams)
 {
 	char *name, *xattr_list = NULL;
@@ -1525,11 +1082,7 @@ int cifsd_vfs_unlink(struct dentry *dir, struct dentry *dentry)
 	int err = 0;
 
 	dget(dentry);
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0)
 	inode_lock_nested(d_inode(dir), I_MUTEX_PARENT);
-#else
-	mutex_lock_nested(&d_inode(dir)->i_mutex, I_MUTEX_PARENT);
-#endif
 	if (!d_inode(dentry) || !d_inode(dentry)->i_nlink) {
 		err = -ENOENT;
 		goto out;
@@ -1541,11 +1094,7 @@ int cifsd_vfs_unlink(struct dentry *dir, struct dentry *dentry)
 		err = vfs_unlink(d_inode(dir), dentry, NULL);
 
 out:
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 2, 0)
 	inode_unlock(d_inode(dir));
-#else
-	mutex_unlock(&d_inode(dir)->i_mutex);
-#endif
 	dput(dentry);
 	if (err)
 		cifsd_debug("failed to delete, err %d\n", err);
@@ -1605,71 +1154,6 @@ void cifsd_vfs_smb2_sector_size(struct inode *inode,
 			fs_ss->optimal_io_size = q->limits.io_opt;
 	}
 }
-
-#ifdef CONFIG_CIFS_INSECURE_SERVER
-/**
- * cifsd_vfs_dentry_open() - open a dentry and provide fid for it
- * @work:	smb work ptr
- * @path:	path of dentry to be opened
- * @flags:	open flags
- * @ret_id:	fid returned on this
- * @option:	file access pattern options for fadvise
- * @fexist:	file already present or not
- *
- * Return:	0 on success, otherwise error
- */
-struct cifsd_file *cifsd_vfs_dentry_open(struct cifsd_work *work,
-	const struct path *path, int flags, __le32 option, int fexist)
-{
-	struct file *filp;
-	int err = 0;
-	struct cifsd_file *fp = NULL;
-
-	filp = dentry_open(path, flags | O_LARGEFILE, current_cred());
-	if (IS_ERR(filp)) {
-		err = PTR_ERR(filp);
-		cifsd_err("dentry open failed, err %d\n", err);
-		return ERR_PTR(err);
-	}
-
-	cifsd_vfs_set_fadvise(filp, option);
-
-	fp = cifsd_open_fd(work, filp);
-	if (IS_ERR(fp)) {
-		fput(filp);
-		err = PTR_ERR(fp);
-		cifsd_err("id insert failed\n");
-		goto err_out;
-	}
-
-	if (flags & O_TRUNC) {
-		if (fexist)
-			smb_break_all_oplock(work, fp);
-		err = vfs_truncate((struct path *)path, 0);
-		if (err)
-			goto err_out;
-	}
-	return fp;
-
-err_out:
-	if (!IS_ERR(fp))
-		cifsd_close_fd(work, fp->volatile_id);
-	if (err) {
-		fp = ERR_PTR(err);
-		cifsd_err("err : %d\n", err);
-	}
-	return fp;
-}
-#else
-struct cifsd_file *cifsd_vfs_dentry_open(struct cifsd_work *work,
-					 const struct path *path,
-					 int flags,
-					 __le32 option,
-					 int fexist)
-{
-	return NULL;
-}
-#endif
 
 static int __dir_empty(struct dir_context *ctx,
 				   const char *name,
@@ -1915,12 +1399,10 @@ static int cifsd_vfs_copy_file_range(struct file *file_in, loff_t pos_in,
 	struct inode *inode_out = file_inode(file_out);
 	int ret;
 
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4, 5, 0)
 	ret = vfs_copy_file_range(file_in, pos_in, file_out, pos_out, len, 0);
 	/* do splice for the copy between different file systems */
 	if (ret != -EXDEV)
 		return ret;
-#endif
 
 	if (S_ISDIR(inode_in->i_mode) || S_ISDIR(inode_out->i_mode))
 		return -EISDIR;
@@ -2028,31 +1510,17 @@ int cifsd_vfs_copy_file_ranges(struct cifsd_work *work,
 
 int cifsd_vfs_posix_lock_wait(struct file_lock *flock)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
-	return wait_event_interruptible(flock->fl_wait, !flock->fl_next);
-#else
 	return wait_event_interruptible(flock->fl_wait, !flock->fl_blocker);
-#endif
 }
 
 int cifsd_vfs_posix_lock_wait_timeout(struct file_lock *flock, long timeout)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
-	return wait_event_interruptible_timeout(flock->fl_wait,
-						!flock->fl_next,
-						timeout);
-#else
 	return wait_event_interruptible_timeout(flock->fl_wait,
 						!flock->fl_blocker,
 						timeout);
-#endif
 }
 
 void cifsd_vfs_posix_lock_unblock(struct file_lock *flock)
 {
-#if LINUX_VERSION_CODE < KERNEL_VERSION(5, 0, 0)
-	posix_unblock_lock(flock);
-#else
 	locks_delete_block(flock);
-#endif
 }

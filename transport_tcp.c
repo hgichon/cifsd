@@ -174,20 +174,12 @@ static int cifsd_tcp_new_connection(struct socket *client_sk)
 
 	csin = CIFSD_TCP_PEER_SOCKADDR(CIFSD_TRANS(t)->conn);
 
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(4, 16, 0)
-	if (kernel_getpeername(client_sk, csin, &rc) < 0) {
-		cifsd_err("client ip resolution failed\n");
-		rc = -EINVAL;
-		goto out_error;
-	}
-	rc = 0;
-#else
 	if (kernel_getpeername(client_sk, csin) < 0) {
 		cifsd_err("client ip resolution failed\n");
 		rc = -EINVAL;
 		goto out_error;
 	}
-#endif
+
 	CIFSD_TRANS(t)->handler = kthread_run(cifsd_conn_handler_loop,
 					CIFSD_TRANS(t)->conn,
 					"kcifsd:%u", cifsd_tcp_get_port(csin));
