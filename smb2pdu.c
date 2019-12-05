@@ -1018,9 +1018,6 @@ int smb2_handle_negotiate(struct cifsd_work *work)
 	case SMB21_PROT_ID:
 		init_smb2_1_server(conn);
 		break;
-	case SMB20_PROT_ID:
-		cifsd_init_smb2_server_common(conn);
-		break;
 	case SMB2X_PROT_ID:
 	case BAD_PROT_ID:
 	default:

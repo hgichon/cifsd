@@ -392,7 +392,6 @@ int cifsd_extract_shortname(struct cifsd_conn *conn,
 			    const char *longname,
 			    char *shortname);
 
-void cifsd_init_smb2_server_common(struct cifsd_conn *conn);
 int cifsd_smb_negotiate_common(struct cifsd_work *work, unsigned int command);
 
 int cifsd_smb_check_shared_mode(struct file *filp, struct cifsd_file *curr_fp);
